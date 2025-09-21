@@ -15,6 +15,8 @@ jobs:
         cc: [gcc, clang]
     runs-on: ubuntu-latest
     steps:
+      - name: Clone repo
+        uses: actions/checkout@v4
       - name: Build tests
         run: |
           ${{ matrix.cc }} main.c -o cerver
@@ -22,6 +24,8 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
+      - name: Clone repo
+        uses: actions/checkout@v4
       - name: Build tests
         shell: cmd
         run: |
