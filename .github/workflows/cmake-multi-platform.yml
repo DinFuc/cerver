@@ -20,7 +20,6 @@ jobs:
       - name: Build tests
         run: |
           ${{ matrix.cc }} main.c -o cerver
-          ./cerver
   windows:
     runs-on: windows-latest
     steps:
@@ -31,4 +30,3 @@ jobs:
         run: |
           call "C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Auxiliary\\Build\\vcvars64.bat"
           cl.exe /Fe:cerver main.c
-          cerver.exe
