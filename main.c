@@ -1,70 +1,210 @@
+#include <errno.h>
 #include <signal.h>
 #include "cerver.h"
 
 #define PORT 12345
 
-Cerver c = {0};
+static Cerver c = {0};
 void cleanup(int code) {
 	(void) code;
+#ifdef linux
 	if (close(c.server) == 0) {
+#else
+	if (closesocket(c.server) == 0) {
+#endif
 		c.server = -1;
 		printf("Shutdown server\n");
 	}
 }
 
-int homepage(Context *ctx) {
-	FILE *f = fopen("index.html", "rb");
-	strputfmt(&ctx->response_body, "%F", f);
-	if (f != NULL) {
-		fclose(f);
+int page404(Context *ctx) {
+	Slice path = ctx->request->path;
+	debug("%.*s", (int) path.len, path.ptr);
+	Slice accept_header = request_header(ctx, "accept");
+	if (accept_header.len > 0) {
+		debug("%.*s", (int) accept_header.len, accept_header.ptr);
 	}
 
-	return 200;
+	if (slice_equal_cstr(path, "/main.c")) {
+		file(ctx, 200, "main.c");
+		return 0;
+	}
+	else if (slice_strstr(accept_header, "html") == NULL) { // TODO: find a better way to check if
+		no_content(ctx, 404);			  					// the request is looking for a html file
+		return 0;
+	}
+
+	FILE *f = fopen("404.html", "rb");
+	if (f == NULL) {
+		no_content(ctx, 404);
+		return 0;
+	}
+
+	html(ctx, 404, "%F", f);
+
+	fclose(f);
+	return 0;
+}
+
+int homepage(Context *ctx) {
+	FILE *f = fopen("index.html", "rb");
+	if (f == NULL) {
+		no_content(ctx, 404);
+		return 0;
+	}
+
+	html(ctx, 200, "%F", f);
+
+	fclose(f);
+	return 0;
+}
+
+int favicon(Context *ctx) {
+	FILE *f = fopen("favicon.ico", "rb");
+	if (f == NULL) {
+		no_content(ctx, 404);
+		return 0;
+	}
+
+	stream(ctx, 200, "image/x-icon", f);
+
+	fclose(f);
+	return 0;
+}
+
+int redirect_to(Context *ctx) {
+	Slice path = ctx->request->path;
+	if (slice_equal_cstr(path, "/")) {
+		Slice host_header = {0}; // request_header(ctx, "host");
+		const char *dest = "/homepage";
+		GString url = {0};
+		gstr_append_fmt_null(&url, "%Sl%s", host_header, dest);
+
+		redirect(ctx, 301, url.ptr);
+
+		free(url.ptr);
+		return 0;
+	}
+
+	return page404(ctx);
 }
 
 int concat(Context *ctx) {
-	char *first_arg = (char*) shget(ctx->form_value, "1");
-	char *second_arg = (char*) shget(ctx->form_value, "2");
-	strputfmt(&ctx->response_body, "%s%s", first_arg, second_arg);
+	Slice first_arg = form_value(ctx, "1");
+	Slice second_arg = form_value(ctx, "2");
+	html(ctx, 200, "%Sl%Sl", first_arg, second_arg);
 
-	return 200;
+	return 0;
 }
 
 int hello(Context *ctx) {
-	char *name = (char*) shget(ctx->query_param, "name");
-	strputfmt(&ctx->response_body, "Hello %s", name);
+	Slice name = query_param(ctx, "name");
+	html(ctx, 200, "Hello %Sl", name);
 
-	return 200;
+	return 0;
 }
 
 int sleep10(Context *ctx) {
-	(void) ctx;
+#ifdef linux
 	sleep(10);
-	return 200;
+#else
+	Sleep(10000);
+#endif
+	no_content(ctx, 200);
+	return 0;
 }
 
-int page404(Context *ctx) {
-	char *path = (char*) shget(ctx->header, "path");
-	debug("%s", path);
+int download(Context *ctx) {
+	html(ctx, 200,
+			"<!DOCTYPE html>\r\n"
+			"<html lang=\"en\">\r\n"
+			"<head>\r\n"
+				"<meta charset=\"utf-8\">\r\n"
+			"</head>\r\n"
+			"<body>\r\n"
+				"<a>Source code</a>\r\n"
+				"<form action=\"/main.c\">\r\n"
+					"<input type=\"submit\" value=\"Download\" />\r\n"
+				"</form>\r\n"
+			"</body>\r\n"
+			"</html>"
+	);
+	return 0;
+}
 
-	FILE *f = fopen("404.html", "rb");
-	strputfmt(&ctx->response_body, "%F", f);
-	if (f != NULL) {
-		fclose(f);
+int upload(Context *ctx) {
+	Slice name = form_value(ctx, "name");
+	if (name.len == 0) {
+		html(ctx, 400, "Missing `name` field");
+		return 0;
 	}
 
-	return 404;
+	FormFile form = find_key_in_multipart_form(&ctx->request->multipart_form, slice_cstr("files"));
+	size_t nfiles = form.npairs;
+	GString msg = {0};
+
+	const char dir[] = "temp/";
+	GString path = gstr_from_cstr(dir);
+	for (size_t i = 0; i < nfiles; i++) {
+		path.len = sizeof(dir) - 1;
+		gstr_append_fmt_null(&path, "%Sl", form.pairs->keys[i]);
+		gstr_append_fmt(&msg, "%Sl: ", form.pairs->keys[i]);
+
+		FILE *f = fopen(path.ptr, "rb");
+		if (f != NULL) {
+			gstr_append_fmt(&msg, "aready exists\n");
+			fclose(f);
+			continue;
+		}
+		f = fopen(path.ptr, "wb");
+		if (f == NULL) {
+			gstr_append_fmt(&msg, "%s\n", strerror(errno));
+			continue;
+		}
+
+		size_t nbytes = fwrite(form.pairs->values[i].ptr, form.pairs->values[i].len, 1, f);
+		debug("fwrite returned %ld", nbytes);
+
+		gstr_append_fmt(&msg, "upload succesfully\n");
+
+		fclose(f);
+	}
+	free(path.ptr);
+
+	if (msg.len == 0) {
+		no_content(ctx, 200);
+		return 0;
+	}
+
+	if (msg.len > 0) {
+		msg.len -= 1;
+	}
+
+	html(ctx, 200, "%Sg", msg);
+
+	free(msg.ptr);
+
+	return 0;
 }
 
 int main(void) {
 	signal(SIGINT, cleanup);
 
-	register_route(&c, "GET:/", homepage);
+	register_route(&c, "GET:/", redirect_to);
+	register_route(&c, "GET:/favicon.ico", favicon);
+	register_route(&c, "GET:/homepage", homepage);
 	register_route(&c, "GET:/hello", hello);
 	register_route(&c, "GET:/sleep", sleep10);
+	register_route(&c, "GET:/download", download);
 	register_route(&c, "GET", page404);
 	register_route(&c, "POST:/concat", concat);
-	run(&c, PORT);
+	register_route(&c, "POST:/upload", upload);
+	if (!run(&c, PORT)) {
+		debug("%s", strerror(errno));
+		return 1;
+	}
+	exit(1);
 
 	return 0;
 }
+
