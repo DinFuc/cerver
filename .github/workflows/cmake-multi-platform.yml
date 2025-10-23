@@ -29,4 +29,4 @@ jobs:
         shell: cmd
         run: |
           call "C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Auxiliary\\Build\\vcvars64.bat"
-          cl.exe /Fe:cerver test.c
+          cl.exe /Fe:cerver main.c /link ws2_32.lib
